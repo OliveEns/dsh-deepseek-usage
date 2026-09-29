@@ -1,6 +1,6 @@
 {
   "name": "@dougen/dsh-deepseek-usage",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "A DeepSeek Harness sidebar plugin: your balance (official API), the active model's unit prices and a peak/off-peak indicator, in a Chinese/English UI. / DeepSeek Harness 侧边栏插件：余额（官方 API）、当前模型档单价与峰谷时段指示灯，界面支持中英文。",
   "type": "module",
   "main": "lib/index.js",
@@ -38,8 +38,8 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6"
+    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6 || ^0.2.0-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6 || ^0.2.0-rc.1"
   },
   "keywords": [
     "dsh",

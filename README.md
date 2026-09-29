@@ -14,6 +14,17 @@ A sidebar plugin for the **DeepSeek Harness (DSH) Web UI** that answers two ques
 - **Peak / off-peak dot with a countdown**: orange during peak hours (Mon–Fri, excluding Chinese public holidays, 9:00–12:00 and 14:00–18:00 Beijing Time), green otherwise — weekends, public holidays and the make-up workdays that fall on a weekend are all off-peak; next to it, the time left until the next switch (`2d 15h`, `5h 47m`, `23m`).
 - Refreshes every 5 minutes, and immediately when you click the card or switch models. Follows the app light/dark theme and the DSH language (Chinese / English).
 
+## DSH compatibility
+
+Before installing, match the plugin version to your DSH line. DSH compares this package's `peerDependencies` on `@deepseek-ai/dsh-credentials` and `@deepseek-ai/dsh-host-webserver` against its own version and refuses to load the plugin when they disagree.
+
+| DSH | Plugin version |
+| --- | --- |
+| `0.2.x` (`0.2.0-rc.1` and later) | `0.11.0` and later |
+| `0.1.x` (`0.1.0-rc.6` and later) | `0.10.x`, or `0.11.0` and later |
+
+`dsh --version` prints your DSH version. Installing without a version picks the newest compatible release; name an exact version (`@dougen/dsh-deepseek-usage@0.10.2`) when the newest does not match your DSH.
+
 ## Install, uninstall, common errors
 
 ### Install
@@ -61,6 +72,17 @@ The card then shows the reason instead of numbers:
 - **当前模型的档单价**：输入 / 输入缓存 / 输出，按此刻生效的计费时段显示；切换模型、跨过峰谷切换点时会跟着变。
 - **峰谷指示灯 + 倒计时**：高峰（周一至周五、不含中国法定节假日，9:00–12:00、14:00–18:00 北京时间）橙色，其余时间绿色——周末、法定节假日全天，以及调休上班的周末都是空闲；指示灯旁给出距下次切换的剩余时间（`2d 15h`、`5h 47m`、`23m`）。
 - 每 5 分钟自动刷新；点击卡片或切换模型时立即刷新。跟随应用明暗主题与 DSH 语言（中文 / English）。
+
+### DSH 版本对应关系
+
+安装前先按 DSH 版本选插件版本：DSH 会用本包的 `peerDependencies`（`@deepseek-ai/dsh-credentials`、`@deepseek-ai/dsh-host-webserver`）与自身版本比对，不一致就拒绝加载插件。
+
+| DSH | 插件版本 |
+| --- | --- |
+| `0.2.x`（`0.2.0-rc.1` 起） | `0.11.0` 及以后 |
+| `0.1.x`（`0.1.0-rc.6` 起） | `0.10.x`，或 `0.11.0` 及以后 |
+
+`dsh --version` 查看当前 DSH 版本。不带版本号安装会取最新的兼容版本；最新版与你的 DSH 不匹配时，用 `@dougen/dsh-deepseek-usage@0.10.2` 这样的完整版本号指定。
 
 ### 安装、卸载与常见错误
 
