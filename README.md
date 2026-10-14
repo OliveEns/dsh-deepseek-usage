@@ -12,11 +12,9 @@ A sidebar plugin for the **DeepSeek Harness (DSH) Web UI** that answers two ques
 - **Balance** in the sidebar footer: your DeepSeek account balance (the symbol follows the account currency: `¥` / `$`).
 - **Unit prices of the active model**: input / input cache / output for the billing window in effect right now. They change when you switch models and when the peak/off-peak window flips.
 - **Peak / off-peak dot with a countdown**: orange during peak hours (Mon–Fri, excluding Chinese public holidays, 9:00–12:00 and 14:00–18:00 Beijing Time), green otherwise — weekends, public holidays and the make-up workdays that fall on a weekend are all off-peak; next to it, the time left until the next switch (`2d 15h`, `5h 47m`, `23m`).
-- Refreshes every 5 minutes, and immediately when you click the card or switch models. Follows the app light/dark theme and the DSH language (Chinese / English).
+- Refreshes every 30 seconds, and immediately when you click the card or switch models. Follows the app light/dark theme and the DSH language (Chinese / English).
 
 ## DSH compatibility
-
-Before installing, match the plugin version to your DSH line. DSH compares this package's `peerDependencies` on `@deepseek-ai/dsh-credentials` and `@deepseek-ai/dsh-host-webserver` against its own version and refuses to load the plugin when they disagree.
 
 | DSH | Plugin version |
 | --- | --- |
@@ -53,12 +51,12 @@ The card then shows the reason instead of numbers:
 
 - Prices are the built-in table `PRICE_TABLE` in `lib/pricing.js`, a snapshot of the official pricing page. It changes only when a new version of the plugin ships — there is no local price file and no background sync.
 - If the active model is not in the table, the card falls back to `deepseek-chat` pricing.
-- Off-peak days come from the holiday table `HOLIDAY_RANGES` in `lib/pricing.js` (and its mirror in `lib/client.js`). The State Council usually publishes next year's arrangement in November; update both lists then. Until you do, holidays are treated as ordinary workdays and the card shows peak prices during them.
+- Off-peak days come from the holiday table `HOLIDAY_RANGES` in `lib/pricing.js`. The State Council usually publishes next year's arrangement in November; update it then. Until you do, holidays are treated as ordinary workdays and the card shows peak prices during them.
 
 ## How it works
 
 - The **host half** (`lib/index.js`, `lib/pricing.js`) registers `GET /api/deepseek-usage`. Per request it reads the API key from DSH credentials, asks the official balance API, resolves the active model's price from the built-in price table, and answers with balance, tier prices, the peak flag and the next switch time. `GET /api/deepseek-usage/holidays` hands the browser half the same public-holiday table.
-- The **browser half** (`lib/client.js`) renders that answer into the `sidebar.footer.action` slot, polls every 5 minutes, and refreshes on click or on a model change. The peak state and the countdown come from the same answer, so the card itself holds no pricing logic.
+- The **browser half** (`lib/client.js`) renders that answer into the `sidebar.footer.action` slot, re-reads it every 30 seconds, and refreshes on click or on a model change. The peak state and the countdown come from the same answer, so the card itself holds no pricing logic.
 
 ---
 
@@ -71,11 +69,9 @@ The card then shows the reason instead of numbers:
 - **余额**：侧边栏底部显示 DeepSeek 账号余额（符号随账号币种 `¥` / `$`）。
 - **当前模型的档单价**：输入 / 输入缓存 / 输出，按此刻生效的计费时段显示；切换模型、跨过峰谷切换点时会跟着变。
 - **峰谷指示灯 + 倒计时**：高峰（周一至周五、不含中国法定节假日，9:00–12:00、14:00–18:00 北京时间）橙色，其余时间绿色——周末、法定节假日全天，以及调休上班的周末都是空闲；指示灯旁给出距下次切换的剩余时间（`2d 15h`、`5h 47m`、`23m`）。
-- 每 5 分钟自动刷新；点击卡片或切换模型时立即刷新。跟随应用明暗主题与 DSH 语言（中文 / English）。
+- 每 30 秒自动刷新；点击卡片或切换模型时立即刷新。跟随应用明暗主题与 DSH 语言（中文 / English）。
 
 ### DSH 版本对应关系
-
-安装前先按 DSH 版本选插件版本：DSH 会用本包的 `peerDependencies`（`@deepseek-ai/dsh-credentials`、`@deepseek-ai/dsh-host-webserver`）与自身版本比对，不一致就拒绝加载插件。
 
 | DSH | 插件版本 |
 | --- | --- |
@@ -110,12 +106,12 @@ dsh plugin --profile web remove @dougen/dsh-deepseek-usage
 
 - 价格是 `lib/pricing.js` 的内置表 `PRICE_TABLE`（官方价格页的快照），只在发布新版本时更新——没有本地价格文件，也没有后台同步。
 - 当前模型不在价格表里时，按 `deepseek-chat` 的价格显示。
-- 放假日期维护在 `lib/pricing.js` 的 `HOLIDAY_RANGES`（`lib/client.js` 有一份镜像，两处要一起改）。国务院办公厅通常在前一年 11 月发布次年安排，届时更新；未更新前，节假日会按普通工作日处理，白天显示高峰价。
+- 放假日期维护在 `lib/pricing.js` 的 `HOLIDAY_RANGES`。国务院办公厅通常在前一年 11 月发布次年安排，届时更新；未更新前，节假日会按普通工作日处理，白天显示高峰价。
 
 ### 简单的工作原理
 
 - **宿主侧**（`lib/index.js`、`lib/pricing.js`）注册 `GET /api/deepseek-usage`：每次请求读取 DSH 凭据里的 API Key、调用官方余额接口、从内置价格表解析当前模型档单价，返回余额、档单价、峰谷状态与下次切换时刻；`GET /api/deepseek-usage/holidays` 把同一份法定节假日表交给浏览器侧。
-- **浏览器侧**（`lib/client.js`）把这份响应渲染进 `sidebar.footer.action` 槽位，每 5 分钟轮询一次，点击卡片或模型变化时立即刷新；峰谷状态与倒计时同样来自这次响应，界面自身不做计价逻辑。
+- **浏览器侧**（`lib/client.js`）把这份响应渲染进 `sidebar.footer.action` 槽位，每 30 秒重新读一次，点击卡片或模型变化时立即刷新；峰谷状态与倒计时同样来自这次响应，界面自身不做计价逻辑。
 
 ## License
 
