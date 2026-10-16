@@ -3,7 +3,7 @@
 <!-- 渲染器会给标题 id 加 `user-content-` 前缀（npm 页面、GitHub 都是），跳转链接要用带前缀的锚点 -->
 [中文文档](#user-content-中文文档)
 
-A sidebar plugin for the **DeepSeek Harness (DSH) Web UI** that answers two questions without leaving the app: **how much balance is left**, and **what the model costs right now**.
+A sidebar plugin for the **DeepSeek Harness (DSH) Web UI** that answers two questions without leaving the app: **how much balance is left**, and **what the model costs right now** — the second one for official DeepSeek models, whose prices the built-in table and DeepSeek's peak/off-peak windows cover.
 
 ![DeepSeek usage card / 用量卡片](https://cdn.jsdelivr.net/npm/@dougen/dsh-deepseek-usage/screenshot.png)
 
@@ -12,6 +12,7 @@ A sidebar plugin for the **DeepSeek Harness (DSH) Web UI** that answers two ques
 - **Balance** in the sidebar footer: your DeepSeek account balance (the symbol follows the account currency: `¥` / `$`).
 - **Unit prices of the active model**: input / input cache / output for the billing window in effect right now. They change when you switch models and when the peak/off-peak window flips.
 - **Peak / off-peak dot with a countdown**: orange during peak hours (Mon–Fri, excluding Chinese public holidays, 9:00–12:00 and 14:00–18:00 Beijing Time), green otherwise — weekends, public holidays and the make-up workdays that fall on a weekend are all off-peak; next to it, the time left until the next switch (`2d 15h`, `5h 47m`, `23m`).
+- **Unit prices and the peak/off-peak dot are for official DeepSeek models only.** When the active model is not one of them (a third-party provider's model, or a router that reports the provider name as the model), the card shows the balance alone: the built-in price table and DeepSeek's peak/off-peak windows do not apply, so any figure derived from them would not match your bill.
 - Refreshes every 30 seconds, and immediately when you click the card or switch models. Follows the app light/dark theme and the DSH language (Chinese / English).
 
 ## DSH compatibility
@@ -50,7 +51,8 @@ The card then shows the reason instead of numbers:
 ### Prices differ from the official page
 
 - Prices are the built-in table `PRICE_TABLE` in `lib/pricing.js`, a snapshot of the official pricing page. It changes only when a new version of the plugin ships — there is no local price file and no background sync.
-- If the active model is not in the table, the card falls back to `deepseek-chat` pricing.
+- The card only shows unit prices and the peak/off-peak dot when the active model is an official DeepSeek model (`deepseek-flash`, `deepseek-v4-pro`, `deepseek-chat`, `deepseek-reasoner` and the legacy names). Any other model — a third-party provider's, or a router reporting the provider name as the model — has no official peak/off-peak pricing, so the card hides both instead of showing a figure that would not match your bill.
+- An official model newer than this plugin release is not in the table either, and the card hides prices for it until the table is updated.
 - Off-peak days come from the holiday table `HOLIDAY_RANGES` in `lib/pricing.js`. The State Council usually publishes next year's arrangement in November; update it then. Until you do, holidays are treated as ordinary workdays and the card shows peak prices during them.
 
 ## How it works
@@ -62,13 +64,14 @@ The card then shows the reason instead of numbers:
 
 ## 中文文档
 
-一个 **DeepSeek Harness（DSH）网页界面**的侧边栏插件：不离开 DSH 就能知道**账号还剩多少钱**、**当前的模型现在什么价**。
+一个 **DeepSeek Harness（DSH）网页界面**的侧边栏插件：不离开 DSH 就能知道**账号还剩多少钱**；当前用的是 DeepSeek 官方模型时，还能看到**它现在什么价**——内置价格表与官方峰谷时段覆盖的正是这些模型。
 
 ### 这个插件做什么
 
 - **余额**：侧边栏底部显示 DeepSeek 账号余额（符号随账号币种 `¥` / `$`）。
 - **当前模型的档单价**：输入 / 输入缓存 / 输出，按此刻生效的计费时段显示；切换模型、跨过峰谷切换点时会跟着变。
 - **峰谷指示灯 + 倒计时**：高峰（周一至周五、不含中国法定节假日，9:00–12:00、14:00–18:00 北京时间）橙色，其余时间绿色——周末、法定节假日全天，以及调休上班的周末都是空闲；指示灯旁给出距下次切换的剩余时间（`2d 15h`、`5h 47m`、`23m`）。
+- **档单价与峰谷指示灯只对 DeepSeek 官方模型显示**。当前模型不是官方模型时（第三方供应商的模型，或路由器把供应商名当模型名上报），卡片只显示余额：内置价格表与官方峰谷时段对它不成立，据此算出的数字与实际账单不符。
 - 每 30 秒自动刷新；点击卡片或切换模型时立即刷新。跟随应用明暗主题与 DSH 语言（中文 / English）。
 
 ### DSH 版本对应关系
@@ -105,7 +108,8 @@ dsh plugin --profile web remove @dougen/dsh-deepseek-usage
 价格与官方不一致时：
 
 - 价格是 `lib/pricing.js` 的内置表 `PRICE_TABLE`（官方价格页的快照），只在发布新版本时更新——没有本地价格文件，也没有后台同步。
-- 当前模型不在价格表里时，按 `deepseek-chat` 的价格显示。
+- 只有当前模型是 DeepSeek 官方模型（`deepseek-flash`、`deepseek-v4-pro`、`deepseek-chat`、`deepseek-reasoner` 及旧名）时，卡片才显示档单价与峰谷指示灯；其他模型（第三方供应商的模型、路由器把供应商名当模型名上报）没有官方峰谷定价，卡片把这两项都隐藏，而不是显示一个与实际账单不符的数字。
+- 比本插件版本更新的官方模型同样不在表里，卡片会隐藏价格，直到价格表更新。
 - 放假日期维护在 `lib/pricing.js` 的 `HOLIDAY_RANGES`。国务院办公厅通常在前一年 11 月发布次年安排，届时更新；未更新前，节假日会按普通工作日处理，白天显示高峰价。
 
 ### 简单的工作原理
