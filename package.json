@@ -4,6 +4,7 @@
   "description": "A DeepSeek Harness sidebar plugin: your balance (official API), and for official DeepSeek models the active model's unit prices and a peak/off-peak indicator, in a Chinese/English UI.",
   "type": "module",
   "main": "lib/index.js",
+  "icon": "./icon.svg",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dougen/dsh-deepseek-usage.git"
@@ -17,6 +18,7 @@
   },
   "files": [
     "lib",
+    "icon.svg",
     "cordis.patch.yml",
     "README.md",
     "screenshot.png"
