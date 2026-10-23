@@ -1,6 +1,6 @@
 {
   "name": "@dougen/dsh-deepseek-usage",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "description": "A DeepSeek Harness sidebar plugin: your balance (official API), and for official DeepSeek models the active model's unit prices and a peak/off-peak indicator, in a Chinese/English UI.",
   "type": "module",
   "main": "lib/index.js",
@@ -14,14 +14,15 @@
     "url": "https://github.com/dougen/dsh-deepseek-usage/issues"
   },
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test \"test/*.test.mjs\""
   },
   "files": [
     "lib",
     "icon.svg",
     "cordis.patch.yml",
     "README.md",
-    "screenshot.png"
+    "screenshot.png",
+    "screenshots.json"
   ],
   "exports": {
     ".": "./lib/index.js",
@@ -33,15 +34,12 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "platform": "web",
-      "inject": [
-        "slots"
-      ]
+      "platform": "web"
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6 || ^0.2.0-rc.1",
-    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6 || ^0.2.0-rc.1"
+    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6 || ^0.2.0-rc.1 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6 || ^0.2.0-rc.1 || ^0.2.1-rc.2"
   },
   "keywords": [
     "dsh",
