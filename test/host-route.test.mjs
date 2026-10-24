@@ -24,27 +24,63 @@ const { apply } = await import('../lib/index.js');
  * 默认的 fetch 桩：返回一份正常余额。所有会打上游的用例都靠它，
  * 测试不联网（"回环地址的各种写法都被接受" 那个用例原本会真的打一次
  * api.deepseek.com）。
+ *
+ * 按 URL 分派：多提供商之后不同 provider 打不同端点，测试要能分别桩掉。
+ * `routes` 的键是 URL 子串，值是响应体或 (url, init) => Response。
+ * 上游调用同时记进 upstreamCalls，缓存分桶断言用它。
  */
+let fetchRoutes = {};
+let upstreamCalls = [];
+
 const defaultFetch = async () => new Response(JSON.stringify({
   is_available: true,
   balance_infos: [{ total_balance: '12.34', currency: 'CNY' }],
 }), { status: 200, headers: { 'content-type': 'application/json' } });
 
+/** 分派桩：命中 routes 的用它的响应，否则回落默认余额。 */
+const dispatchFetch = async (url, init) => {
+  upstreamCalls.push(String(url));
+  const key = Object.keys(fetchRoutes).find((k) => String(url).includes(k));
+  if (key === undefined) return defaultFetch(url, init);
+  const route = fetchRoutes[key];
+  return typeof route === 'function' ? route(url, init) : route;
+};
+
+globalThis.fetch = dispatchFetch;
 const originalFetch = globalThis.fetch;
-globalThis.fetch = defaultFetch;
 test.after(() => { globalThis.fetch = originalFetch; });
+
+/**
+ * 清掉路由表与调用记录，并把分派桩装回 globalThis.fetch。
+ *
+ * 既有用例在自己的 try/finally 里把 fetch 换成一次性桩再恢复 originalFetch；
+ * 恢复后它仍是 dispatchFetch，但为防某个用例漏了 finally，这里显式装回。
+ */
+function resetFetch() {
+  fetchRoutes = {};
+  upstreamCalls = [];
+  globalThis.fetch = dispatchFetch;
+}
 
 /** 造一个最小的 ctx：记录注册进来的路由，可注入凭据与取价。 */
 let keySeq = 0;
 function makeCtx(options = {}) {
   const routes = new Map();
-  // 每个 ctx 用不同的 Key：宿主按 Key 值缓存余额快照，测试之间不能互相命中。
+  // 每个 ctx 用不同的 Key：宿主按 Key 值缓存账户快照，测试之间不能互相命中。
   keySeq += 1;
   const key = options.key === undefined ? `sk-test-${keySeq}` : options.key;
   const ctx = {
     logger: { warn() {} },
     credentials: {
-      resolve: async () => (key === null ? undefined : { value: key }),
+      resolve: async (ref) => {
+        // 引用名取自 options.refs（缺省只认 DEEPSEEK_API_KEY），
+        // 让测试能为不同 provider 配不同密钥。
+        const name = ref && typeof ref === 'object' && 'name' in ref ? ref.name : String(ref);
+        const value = options.refs ? options.refs[name] : (name === 'DEEPSEEK_API_KEY' ? key : undefined);
+        return value === undefined || value === null ? undefined : { value };
+      },
+      set: async () => {},
+      unset: async () => {},
     },
     get(name) {
       if (name === 'agentDefaultModel') {
@@ -53,6 +89,12 @@ function makeCtx(options = {}) {
             provider: options.provider ?? 'deepseek-official',
             model: options.model ?? 'deepseek-flash',
           }),
+        };
+      }
+      if (name === 'llm') {
+        return {
+          listProviders: () => (options.registered ?? [{ id: 'deepseek-official', name: 'DeepSeek' }]),
+          listConfigurableProviders: () => (options.declared ?? []),
         };
       }
       return undefined;
@@ -75,6 +117,27 @@ function makeCtx(options = {}) {
 /** 造一个最小的 req/res。 */
 function makeReq(headers = {}, url = '/api/deepseek-usage?lang=zh', method = 'GET') {
   return { headers, url, method };
+}
+
+/**
+ * 造一个 POST /token 请求。宿主的 readBoundedText 需要 Response 形态
+ * （headers.get + text），所以用真的 Response 提供这两样，再补上
+ * req 的 method / url / headers。
+ */
+function makePost(payload, headers = {}) {
+  const text = JSON.stringify(payload);
+  const response = new Response(text, { headers: { 'content-type': 'application/json', ...headers } });
+  return {
+    method: 'POST',
+    url: '/api/deepseek-usage/token',
+    headers: {
+      host: '127.0.0.1:64452',
+      'content-type': 'application/json',
+      ...headers,
+      get: (name) => response.headers.get(name),
+    },
+    text: async () => text,
+  };
 }
 
 function makeRes() {
@@ -359,4 +422,266 @@ test('假期路由也只接受本机来源', async () => {
   const denied = await call(route, makeReq({ host: 'evil.example' }, '/api/deepseek-usage/holidays'));
   assert.equal(denied.status, 403);
 });
+
+// ---- 多提供商账户 ---------------------------------------------------------
+
+test('当前 provider 是 moonshotai 时返回 moonshot 余额，不是 DeepSeek 的', async () => {
+  resetFetch();
+  fetchRoutes = {
+    'moonshot.ai/v1/users/me/balance': new Response(JSON.stringify({
+      code: 0,
+      data: { available_balance: 49.58894, voucher_balance: 46.58893, cash_balance: 3.00001 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  };
+  const { ctx, routes } = makeCtx({
+    provider: 'moonshotai',
+    refs: { MOONSHOT_API_KEY: 'sk-moonshot' },
+  });
+  apply(ctx);
+  const res = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+  assert.equal(res.status, 200);
+  assert.equal(res.body.provider.id, 'moonshotai');
+  assert.equal(res.body.provider.kind, 'balance');
+  assert.equal(res.body.balance.total, 49.58894);
+  assert.equal(res.body.balance.currency, 'USD');
+  assert.deepEqual(res.body.errors, []);
+});
+
+test('订阅制 provider 返回最紧窗口的百分比，不返回余额', async () => {
+  resetFetch();
+  fetchRoutes = {
+    'opencode.ai/zen/go/v1/usage': new Response(JSON.stringify({
+      usage: {
+        rolling: { status: 'ok', percent: 4, resetsAt: '2026-08-13T16:00:00.000Z' },
+        weekly: { status: 'ok', percent: 34 },
+        monthly: { status: 'ok', percent: 12 },
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  };
+  const { ctx, routes } = makeCtx({
+    provider: 'opencode',
+    refs: { OPENCODE_API_KEY: 'sk-oc' },
+  });
+  apply(ctx);
+  const res = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+  assert.equal(res.body.provider.kind, 'usage');
+  assert.equal(res.body.balance.total, null, '订阅制没有余额，必须是 null 而不是 0');
+  assert.equal(res.body.usage.windows.length, 3);
+  assert.equal(res.body.usage.windows[1].percent, 34, '周窗口是三者里最紧的');
+  assert.deepEqual(res.body.errors, []);
+});
+
+test('provider 没有可查接口时卡片置空并说明原因，不显示任何数字', async () => {
+  resetFetch();
+  const { ctx, routes } = makeCtx({ provider: 'google' });
+  apply(ctx);
+  const res = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+  assert.equal(res.body.provider.kind, 'none');
+  assert.equal(res.body.provider.reason, 'cloudAuthOnly');
+  assert.equal(res.body.balance.total, null);
+  assert.equal(res.body.usage, null);
+  assert.equal(res.body.errors.length, 1);
+  // 未在目录里声明时显示名就是路由 id 本身，所以是 `google` 而不是 `Google`。
+  assert.match(res.body.errors[0], /当前插件不支持 google/);
+  assert.equal(upstreamCalls.length, 0, '不可查的 provider 不该打任何上游');
+});
+
+test('未配密钥时文案点名该配的引用', async () => {
+  resetFetch();
+  const { ctx, routes } = makeCtx({ provider: 'moonshotai', refs: {} });
+  apply(ctx);
+  const res = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+  assert.equal(res.body.balance.total, null);
+  assert.deepEqual(res.body.errors, ['未配置 MOONSHOTAI_API_KEY']);
+});
+
+test('OAuth provider：未填令牌时提示填写，不猜数字', async () => {
+  resetFetch();
+  const { ctx, routes } = makeCtx({ provider: 'anthropic', refs: {} });
+  apply(ctx);
+  const res = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+  assert.equal(res.body.provider.kind, 'oauth');
+  assert.equal(res.body.usage, null);
+  assert.deepEqual(res.body.errors, ['尚未填写该提供商的 OAuth 令牌']);
+  assert.equal(upstreamCalls.length, 0);
+});
+
+test('OAuth provider：填了令牌后按限流头给出 5h/7d', async () => {
+  resetFetch();
+  fetchRoutes = {
+    '/api/oauth/usage': new Response('{}', { status: 403 }),
+    '/v1/messages': new Response('{}', {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'anthropic-ratelimit-unified-5h-utilization': '0.33',
+        'anthropic-ratelimit-unified-5h-reset': '1789882800',
+        'anthropic-ratelimit-unified-7d-utilization': '0.13',
+      },
+    }),
+  };
+  const { ctx, routes } = makeCtx({
+    provider: 'anthropic',
+    refs: { DSH_USAGE_CLAUDE_OAUTH_TOKEN: 'sk-ant-oat01-test' },
+  });
+  apply(ctx);
+  const res = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+  assert.deepEqual(res.body.errors, []);
+  assert.deepEqual(res.body.usage.windows.map((w) => w.key), ['5h', '7d']);
+  assert.equal(res.body.usage.windows[0].percent, 33);
+  assert.equal(res.body.usage.windows[0].resetsAt, 1789882800000);
+});
+
+test('账户缓存按 provider + Key 分桶：换 provider 不命中旧读数', async () => {
+  resetFetch();
+  fetchRoutes = {
+    'moonshot.ai/v1/users/me/balance': new Response(JSON.stringify({
+      code: 0, data: { available_balance: 7 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  };
+  const { ctx, routes } = makeCtx({ provider: 'moonshotai', refs: { MOONSHOT_API_KEY: 'sk-a' } });
+  apply(ctx);
+  const route = routes.get('/api/deepseek-usage');
+  const first = await call(route, makeReq({ host: '127.0.0.1:64452' }));
+  assert.equal(first.body.balance.total, 7);
+  const moonshotCalls = upstreamCalls.length;
+  assert.equal(moonshotCalls, 1);
+
+  // 同一个 Key 再问：命中缓存，不再打上游。
+  const again = await call(route, makeReq({ host: '127.0.0.1:64452' }));
+  assert.equal(again.body.balance.total, 7);
+  assert.equal(upstreamCalls.length, moonshotCalls, '缓存窗口内不得重复打上游');
+});
+
+test('/accounts：收录规则与排序', async () => {
+  resetFetch();
+  fetchRoutes = {
+    'moonshot.ai/v1/users/me/balance': new Response(JSON.stringify({
+      code: 0, data: { available_balance: 5 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  };
+  const { ctx, routes } = makeCtx({
+    provider: 'workbuddy',
+    // 独立的 Key：账户缓存按 Key 分桶，复用前面用例的 Key 会命中它的读数。
+    refs: { MOONSHOT_API_KEY: 'sk-accounts-listing' },
+    registered: [{ id: 'deepseek-official', name: 'DeepSeek' }, { id: 'workbuddy', name: 'Workbuddy' }],
+    declared: [
+      { provider: 'moonshotai', displayName: 'Moonshot' },
+      { provider: 'google', displayName: 'Google' },
+      { provider: 'workbuddy', displayName: 'Workbuddy' },
+    ],
+  });
+  apply(ctx);
+  const res = await call(routes.get('/api/deepseek-usage/accounts'), makeReq({ host: '127.0.0.1:64452' }, '/api/deepseek-usage/accounts'));
+  assert.equal(res.status, 200);
+  const ids = res.body.accounts.map((a) => a.id);
+  // 当前 provider 排最前。
+  assert.equal(ids[0], 'workbuddy');
+  assert.equal(res.body.accounts[0].current, true);
+  // 受支持的与已配密钥的列出；未配密钥、不受支持、非当前的不列。
+  assert.ok(ids.includes('moonshotai'), '已配密钥的应列出');
+  assert.ok(ids.includes('deepseek-official'), '受支持的应列出');
+  assert.equal(ids.includes('google'), false, '未配密钥且不受支持的不列');
+
+  const moonshot = res.body.accounts.find((a) => a.id === 'moonshotai');
+  assert.equal(moonshot.status, 'ok');
+  assert.equal(moonshot.balance.total, 5);
+  assert.equal(moonshot.kind, 'balance');
+  // 引用名可以出现在响应里（它不是机密），用于告诉用户该配哪一个。
+  assert.ok(moonshot.refs.includes('MOONSHOT_API_KEY'));
+
+  const workbuddy = res.body.accounts.find((a) => a.id === 'workbuddy');
+  assert.equal(workbuddy.kind, 'none');
+  assert.equal(workbuddy.reason, 'unsupported');
+});
+
+test('/accounts：OAuth 行的令牌状态不回传令牌本身', async () => {
+  resetFetch();
+  const { ctx, routes } = makeCtx({
+    provider: 'anthropic',
+    refs: { DSH_USAGE_CLAUDE_OAUTH_TOKEN: 'sk-ant-SECRET-VALUE' },
+    registered: [{ id: 'anthropic', name: 'Anthropic' }],
+    declared: [{ provider: 'anthropic', displayName: 'Anthropic' }],
+  });
+  apply(ctx);
+  const res = await call(routes.get('/api/deepseek-usage/accounts'), makeReq({ host: '127.0.0.1:64452' }, '/api/deepseek-usage/accounts'));
+  const anthropic = res.body.accounts.find((a) => a.id === 'anthropic');
+  assert.equal(anthropic.kind, 'oauth');
+  assert.deepEqual(anthropic.token, { configured: true });
+  assert.ok(!JSON.stringify(res.body).includes('SECRET'), '响应里不得出现令牌');
+  assert.ok(!JSON.stringify(res.body).includes('sk-ant-'), '响应里不得出现令牌');
+});
+
+test('/accounts：只接受本机 GET', async () => {
+  const { ctx, routes } = makeCtx();
+  apply(ctx);
+  const route = routes.get('/api/deepseek-usage/accounts');
+  const denied = await call(route, makeReq({ host: 'evil.example' }, '/api/deepseek-usage/accounts'));
+  assert.equal(denied.status, 403);
+  const post = await call(route, makeReq({}, '/api/deepseek-usage/accounts', 'POST'));
+  assert.equal(post.status, 405);
+});
+
+test('/token：写入后立即可查，清除后回到未填写', async () => {
+  resetFetch();
+  const stored = {};
+  const { ctx, routes } = makeCtx({
+    provider: 'anthropic',
+    refs: {},
+    registered: [{ id: 'anthropic', name: 'Anthropic' }],
+    declared: [{ provider: 'anthropic', displayName: 'Anthropic' }],
+  });
+  // 让 credentials.set/unset 真的落到 stored，宿主的缓存也要跟着失效。
+  ctx.credentials.set = async (ref, value) => { stored[ref.name] = value; };
+  ctx.credentials.unset = async (ref) => { delete stored[ref.name]; };
+  ctx.credentials.resolve = async (ref) => (stored[ref.name] === undefined ? undefined : { value: stored[ref.name] });
+  apply(ctx);
+  const tokenRoute = routes.get('/api/deepseek-usage/token');
+
+  // 写之前：未填写。
+  const before = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+  assert.deepEqual(before.body.errors, ['尚未填写该提供商的 OAuth 令牌']);
+
+  const written = await call(tokenRoute, makePost({ provider: 'anthropic', token: 'sk-ant-oat01-abc' }));
+  assert.equal(written.status, 200);
+  assert.equal(written.body.configured, true);
+  assert.equal(stored.DSH_USAGE_CLAUDE_OAUTH_TOKEN, 'sk-ant-oat01-abc');
+  assert.ok(!JSON.stringify(written.body).includes('sk-ant-oat01-abc'), '响应不得回传令牌');
+
+  const cleared = await call(tokenRoute, makePost({ provider: 'anthropic', token: '' }));
+  assert.equal(cleared.body.configured, false);
+  assert.equal(stored.DSH_USAGE_CLAUDE_OAUTH_TOKEN, undefined);
+});
+
+test('/token：只接受本机 POST 与白名单内的 provider', async () => {
+  const { ctx, routes } = makeCtx();
+  apply(ctx);
+  const route = routes.get('/api/deepseek-usage/token');
+  const denied = await call(route, makeReq({ host: 'evil.example' }, '/api/deepseek-usage/token', 'POST'));
+  assert.equal(denied.status, 403);
+  const get = await call(route, makeReq({ host: '127.0.0.1:64452' }, '/api/deepseek-usage/token'));
+  assert.equal(get.status, 405);
+  const unknown = await call(route, makePost({ provider: 'workbuddy', token: 'x' }));
+  assert.equal(unknown.status, 400);
+  // 含换行的令牌不能进 HTTP 头，直接拒绝而不是把异常原文抛出去。
+  const badKey = await call(route, makePost({ provider: 'anthropic', token: 'sk-ant\nsecond-line' }));
+  assert.equal(badKey.status, 400);
+  assert.ok(!JSON.stringify(badKey.body).includes('sk-ant'), '拒绝响应里不得出现令牌');
+});
+
+test('上游异常不会把异常原文送到浏览器（多提供商路径）', async () => {
+  resetFetch();
+  fetchRoutes = {
+    'moonshot.ai': async () => { throw new Error('connect ECONNREFUSED 10.0.0.7:443 (internal)'); },
+  };
+  // 换一个没用过的 Key：账户缓存按 provider + 引用 + Key 分桶，
+  // 复用前一个用例的 Key 会命中它的成功读数。
+  const { ctx, routes } = makeCtx({ provider: 'moonshotai', refs: { MOONSHOT_API_KEY: 'sk-network-failure' } });
+  apply(ctx);
+  const res = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.errors, ['账户接口无法连接']);
+  assert.ok(!JSON.stringify(res.body).includes('10.0.0.7'), '异常原文不得进响应');
+});
+
 

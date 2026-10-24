@@ -117,6 +117,74 @@ test('倒计时落在精确的整点边界上', () => {
   assert.equal(n2.peak, true);
 });
 
+// ---- 多提供商账户读数 -----------------------------------------------------
+
+/** 账户读数的窗口标签需要一个本地化函数；测试用恒等函数。 */
+const t = (k) => k;
+
+test('余额形态：币种符号 + 金额', () => {
+  const lead = I.accountLead('balance', { balance: { total: 12.34, currency: 'CNY' } }, t);
+  assert.equal(lead.symbol, '¥');
+  assert.equal(lead.value, '12.34');
+  const usd = I.accountLead('balance', { balance: { total: 49.58894, currency: 'USD' } }, t);
+  assert.equal(usd.symbol, '$');
+  assert.equal(usd.value, '49.59');
+});
+
+test('余额缺失显示占位符，不显示 0', () => {
+  const lead = I.accountLead('balance', { balance: { total: null, currency: 'CNY' } }, t);
+  assert.equal(lead.symbol, '¥');
+  assert.equal(lead.value, '—');
+  const none = I.accountLead('balance', null, t);
+  assert.equal(none.value, '—');
+});
+
+test('订阅用量形态：取最紧窗口的百分比', () => {
+  const account = {
+    usage: {
+      windows: [
+        { key: '5h', percent: 4, resetsAt: null },
+        { key: '7d', percent: 34, resetsAt: null },
+        { key: '30d', percent: 12, resetsAt: null },
+      ],
+    },
+  };
+  const lead = I.accountLead('usage', account, t);
+  assert.equal(lead.symbol, 'accounts.window.7d', '符号位是窗口标签的 key（由界面本地化）');
+  assert.equal(lead.value, '34%');
+});
+
+test('订阅用量：没有窗口或读数缺失时是占位符', () => {
+  assert.equal(I.accountLead('usage', { usage: { windows: [] } }, t).value, '—');
+  assert.equal(I.accountLead('usage', null, t).value, '—');
+  // 百分比不是数字时不当成 0。
+  const bad = I.accountLead('usage', { usage: { windows: [{ key: '5h', percent: null }] } }, t);
+  assert.equal(bad.value, '—');
+});
+
+test('OAuth 形态与用量形态同构', () => {
+  const account = { usage: { windows: [{ key: '5h', percent: 33, resetsAt: 1789882800000 }] } };
+  const lead = I.accountLead('oauth', account, t);
+  assert.equal(lead.symbol, 'accounts.window.5h');
+  assert.equal(lead.value, '33%');
+});
+
+test('不可查的 provider：符号与数值都是占位符', () => {
+  const lead = I.accountLead('none', { balance: { total: 99, currency: 'CNY' } }, t);
+  assert.equal(lead.symbol, '');
+  assert.equal(lead.value, '—', 'none 形态不得显示任何数字');
+});
+
+test('百分比：null 是占位符，真 0 是 0%', () => {
+  assert.equal(I.percentText(null), '—');
+  assert.equal(I.percentText(undefined), '—');
+  assert.equal(I.percentText(''), '—');
+  assert.equal(I.percentText('n/a'), '—');
+  assert.equal(I.percentText(0), '0%');
+  assert.equal(I.percentText(23.4), '23%');
+  assert.equal(I.percentText(99.6), '100%');
+});
+
 function nextChangeOf(days) {
   return I.nextChange(at('2026-10-22T11:00:00+08:00'), days);
 }
