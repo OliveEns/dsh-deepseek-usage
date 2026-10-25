@@ -445,7 +445,7 @@ test('状态表：不支持的提供商显示"不适用"而非红色"查询失�
       errors: [],
     }),
   });
-  const el = Section({ t: (k) => k, subject: { kind: 'bundle' } });
+  const el = Section({ t: (k) => k, subject: { kind: 'bundle', pkg: { name: '@dougen/dsh-deepseek-usage' } } });
   runtime.render(() => el.type(el.props));
   await flush();
   const { out } = runtime.render(() => el.type(el.props));
@@ -467,4 +467,34 @@ test('状态表：不支持的提供商显示"不适用"而非红色"查询失�
   // 不支持的提供商：中性 tertiary 色，不是错误色。
   assert.equal(byText['accounts.status.unsupported'], 'var(--dsw-alias-label-tertiary, rgba(0,0,0,.4))');
   assert.ok(!Object.hasOwn(byText, 'accounts.status.error') || byText['accounts.status.unsupported'] !== byText['accounts.status.error']);
+});
+
+test('状态表只出现在本插件的详情页', async () => {
+  const runtime = makeRuntime();
+  const Section = loadSlots(runtime)['plugins.detail.section'];
+  const t = (k) => k;
+
+  // 别的 bundle：不渲染。`plugins.detail.section` 是所有详情页共用的 slot，
+  // 只判断 kind === 'bundle' 会让面板出现在每个插件页上。
+  assert.equal(
+    Section({ t, subject: { kind: 'bundle', pkg: { name: '@deepseek-ai/dsh-client-ui-cordis' } } }),
+    null,
+    '别的 bundle 的详情页不该出现本插件的面板',
+  );
+  // 行页面与官方插件页面同理。
+  assert.equal(
+    Section({ t, subject: { kind: 'row', pkg: { name: '@dougen/dsh-deepseek-usage' }, row: { rowId: 'x' } } }),
+    null,
+    '行页面不是 bundle 页面',
+  );
+  assert.equal(Section({ t, subject: { kind: 'item', id: 'agent-loop' } }), null, '官方插件页面不该出现');
+  // subject 缺失也不能崩。
+  assert.equal(Section({ t }), null);
+
+  // 本插件的 bundle 页面：渲染一块 section（注册返回的是组件元素，
+  // 真正的 <section> 在组件返回值里）。
+  const own = Section({ t, subject: { kind: 'bundle', pkg: { name: '@dougen/dsh-deepseek-usage' } } });
+  assert.notEqual(own, null);
+  const rendered = runtime.render(() => own.type(own.props));
+  assert.equal(rendered.out.type, 'section');
 });
