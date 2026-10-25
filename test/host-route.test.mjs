@@ -553,6 +553,44 @@ test('账户缓存按 provider + Key 分桶：换 provider 不命中旧读数', 
   assert.equal(upstreamCalls.length, moonshotCalls, '缓存窗口内不得重复打上游');
 });
 
+test('/accounts?list=1：只回清单、不打上游，状态是待查询', async () => {
+  resetFetch();
+  const { ctx, routes } = makeCtx({
+    provider: 'moonshotai',
+    refs: { MOONSHOT_API_KEY: 'sk-list-mode' },
+    registered: [{ id: 'deepseek-official', name: 'DeepSeek' }, { id: 'moonshotai', name: 'Moonshot' }],
+    declared: [{ provider: 'moonshotai', displayName: 'Moonshot' }],
+  });
+  apply(ctx);
+  const res = await call(
+    routes.get('/api/deepseek-usage/accounts'),
+    makeReq({ host: '127.0.0.1:64452' }, '/api/deepseek-usage/accounts?list=1'),
+  );
+  assert.equal(res.status, 200);
+  assert.ok(res.body.accounts.length > 0, '清单必须立刻给出卡片');
+  assert.equal(upstreamCalls.length, 0, '清单模式不得打上游');
+  for (const item of res.body.accounts) {
+    if (item.kind === 'none') continue;
+    assert.ok(['pending', 'no-key', 'no-token'].includes(item.status), `${item.id} 的状态应为待查询或未配置，实际 ${item.status}`);
+    assert.equal(item.balance, null);
+    assert.equal(item.usage, null);
+  }
+  const moonshot = res.body.accounts.find((a) => a.id === 'moonshotai');
+  assert.equal(moonshot.status, 'pending', '已配密钥的应是待查询');
+  assert.equal(moonshot.current, true);
+
+  // 完整请求随后把读数补上，卡片不用换位置。
+  fetchRoutes = {
+    'moonshot.ai/v1/users/me/balance': new Response(JSON.stringify({
+      code: 0, data: { available_balance: 8 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  };
+  const full = await call(routes.get('/api/deepseek-usage/accounts'), makeReq({ host: '127.0.0.1:64452' }, '/api/deepseek-usage/accounts'));
+  const fullMoonshot = full.body.accounts.find((a) => a.id === 'moonshotai');
+  assert.equal(fullMoonshot.status, 'ok');
+  assert.equal(fullMoonshot.balance.total, 8);
+});
+
 test('/accounts：收录规则与排序', async () => {
   resetFetch();
   fetchRoutes = {
@@ -610,6 +648,36 @@ test('/accounts：OAuth 行的令牌状态不回传令牌本身', async () => {
   assert.deepEqual(anthropic.token, { configured: true });
   assert.ok(!JSON.stringify(res.body).includes('SECRET'), '响应里不得出现令牌');
   assert.ok(!JSON.stringify(res.body).includes('sk-ant-'), '响应里不得出现令牌');
+});
+
+test('/accounts：只在 DSH 里检测到 Claude / Codex 时收录其特征行', async () => {
+  resetFetch();
+  const declared = [
+    { provider: 'moonshotai', displayName: 'Moonshot' },
+    { provider: 'anthropic', displayName: 'Anthropic' },
+    { provider: 'openai-codex', displayName: 'OpenAI Codex' },
+  ];
+  // 没有任何一条路由 / 当前选中 —— 两个 OAuth 提供商都不该收录。
+  const absent = makeCtx({
+    provider: 'moonshotai',
+    refs: { MOONSHOT_API_KEY: 'sk-oauth-detect-none' },
+    registered: [{ id: 'moonshotai', name: 'Moonshot' }],
+    declared,
+  });
+  apply(absent.ctx);
+  const none = await call(absent.routes.get('/api/deepseek-usage/accounts'), makeReq({ host: '127.0.0.1:64452' }, '/api/deepseek-usage/accounts'));
+  assert.deepEqual(none.body.accounts.filter((a) => a.kind === 'oauth'), []);
+
+  // 注册了 anthropic 路由 —— 只收录它，Codex 仍不出现。
+  const partial = makeCtx({
+    provider: 'moonshotai',
+    refs: { MOONSHOT_API_KEY: 'sk-oauth-detect-partial' },
+    registered: [{ id: 'anthropic', name: 'Anthropic' }],
+    declared,
+  });
+  apply(partial.ctx);
+  const some = await call(partial.routes.get('/api/deepseek-usage/accounts'), makeReq({ host: '127.0.0.1:64452' }, '/api/deepseek-usage/accounts'));
+  assert.deepEqual(some.body.accounts.filter((a) => a.kind === 'oauth').map((a) => a.id), ['anthropic']);
 });
 
 test('/accounts：只接受本机 GET', async () => {

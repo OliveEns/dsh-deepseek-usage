@@ -13,7 +13,7 @@ A sidebar plugin for the **DeepSeek Harness (DSH) Web UI** that answers two ques
 - **Unit prices of the active model**: input / input cache / output for the billing window in effect right now. They change when you switch models and when the peak/off-peak window flips.
 - **Peak / off-peak dot with a countdown**: orange during peak hours (Mon–Fri, excluding Chinese public holidays, 9:00–12:00 and 14:00–18:00 Beijing Time), green otherwise — weekends, public holidays and the make-up workdays that fall on a weekend are all off-peak; next to it, the time left until the next switch (`2d 15h`, `5h 47m`, `23m`).
 - **Unit prices and the peak/off-peak dot are for official DeepSeek routes only.** The plugin prices a model only when it is served by DeepSeek's own route (`deepseek-official` / `deepseek-account`) *and* its model id is in the built-in table. A third-party route that happens to offer a model called `deepseek-flash` is priced by its own contract, so the built-in table and DeepSeek's peak/off-peak windows do not apply to it — the card then shows the account reading alone, because any figure derived from them would not match your bill. An official model that is newer than this plugin release is also left unpriced until the table catches up.
-- **A query-status page** on the plugin's own page in Plugins: every provider DSH knows about that is configured, supported, or current, with its reading or the reason it cannot be read. Claude Code and OpenAI Codex accept a pasted OAuth token there.
+- **A query-status page** on the plugin's own page in Plugins: every provider DSH knows about that is configured, supported, or current gets a small card with its reading or the reason it cannot be read. When DSH detects Claude Code or OpenAI Codex, a token card appears for it and accepts a pasted OAuth token.
 - Refreshes every 30 seconds, and immediately when you click the card or switch models. Follows the app light/dark theme and the DSH language (Chinese / English).
 - While the first response is still in flight the card shows a placeholder (`—`) rather than a number it does not have yet.
 
@@ -119,7 +119,7 @@ Models reached through a third-party gateway (Workbuddy, a relay, a self-hosted 
 - **当前模型的档单价**：输入 / 输入缓存 / 输出，按此刻生效的计费时段显示；切换模型、跨过峰谷切换点时会跟着变。
 - **峰谷指示灯 + 倒计时**：高峰（周一至周五、不含中国法定节假日，9:00–12:00、14:00–18:00 北京时间）橙色，其余时间绿色——周末、法定节假日全天，以及调休上班的周末都是空闲；指示灯旁给出距下次切换的剩余时间（`2d 15h`、`5h 47m`、`23m`）。
 - **档单价与峰谷指示灯只对 DeepSeek 官方路由上的官方模型显示**。只有模型由 DeepSeek 自有路由（`deepseek-official` / `deepseek-account`）提供、且模型 id 在内置表里，卡片才给价。第三方路由上恰好也叫 `deepseek-flash` 的模型按它自己的合约计费，内置价格表与官方峰谷时段对它不成立，卡片只显示账户读数——据此算出的数字与实际账单不符。比本插件版本更新的官方模型同样不估价，直到价格表更新：插件不会按模型名猜价格。
-- **查询状态页**：在 Plugins 面板里本插件的详情页上，列出 DSH 已配置的、受支持的、以及当前的每个提供商——能查的显示数值，不能查的写明原因。Claude Code 与 OpenAI Codex 在该页粘贴 OAuth 令牌后即可查询。
+- **查询状态页**：在 Plugins 面板里本插件的详情页上，DSH 已配置的、受支持的、以及当前的每个提供商各占一张小卡片——能查的显示数值，不能查的写明原因。DSH 里检测到 Claude Code 或 OpenAI Codex 时，对应的卡片旁出现令牌填写卡，粘贴 OAuth 令牌后即可查询。
 - 每 30 秒自动刷新；点击卡片或切换模型时立即刷新。跟随应用明暗主题与 DSH 语言（中文 / English）。
 - 第一次响应还没回来时，卡片显示占位符 `—`，而不是一个它并不拥有的数字。
 
@@ -141,7 +141,7 @@ Models reached through a third-party gateway (Workbuddy, a relay, a self-hosted 
 
 #### Claude Code 与 Codex 的 OAuth 令牌
 
-这两家的订阅用量只对 OAuth 令牌开放，而 DSH 里这两条路由走的是 API Key，拿不到订阅令牌。打开 Plugins 里本插件的页面，粘贴令牌后卡片与状态表即可显示：
+这两家的订阅用量只对 OAuth 令牌开放，而 DSH 里这两条路由走的是 API Key，拿不到订阅令牌。DSH 里检测到 Claude Code / Codex（这两条路由已注册、或在目录里已配置、或是当前选中的提供商）时，插件页就会出现对应的令牌填写卡；粘贴令牌后卡片与状态卡即可显示：
 
 - **Claude Code**——在已登录 Claude Code 的机器上，从 `~/.claude/.credentials.json` 的 `claudeAiOauth.accessToken` 复制（macOS 在钥匙串项 `Claude Code-credentials` 里）。`claude setup-token` 产生的令牌也能用，但它只带 `user:inference` 权限，插件改为从推理响应的限流头读取 5 小时与 7 天两个窗口，拿不到完整用量体里的分模型周限额。
 - **OpenAI Codex**——从 `~/.codex/auth.json` 的 `tokens.access_token` 复制，并把 `tokens.account_id` 填进账号 ID 一栏（它会作为 `ChatGPT-Account-Id` 请求头发送）。
@@ -189,7 +189,7 @@ dsh plugin --profile web remove @dougen/dsh-deepseek-usage
 - **账户当前不可用**：余额接口有响应，但 `is_available` 为 false。
 - **`DEEPSEEK_BASE_URL` 指向第三方中转**：官方余额接口 `https://api.deepseek.com/user/balance` 可能不可用或返回异常，本插件只支持 DeepSeek 官方平台。
 - **`<提供商> 没有可查询余额或用量的接口`**：当前提供商属于上面"查不到"的那几类，卡片留空而不是显示一个来自错误账户的数字。
-- **尚未填写该提供商的 OAuth 令牌**（Claude Code / Codex）：到插件页面粘贴一个。
+- **尚未填写该提供商的 OAuth 令牌**（Claude Code / Codex）：到插件页面，在该提供商的卡片旁粘贴一个。
 
 卡片不会原样显示上游的错误消息：传输层细节留在宿主日志里，卡片上只放一句简短、能行动的话。
 
