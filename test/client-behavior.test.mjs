@@ -75,13 +75,31 @@ function makeRuntime() {
   };
 }
 
-/** 载入 client.js 并拿到注册进 sidebar.footer.action 槽位的组件。 */
-function loadClient(runtime) {
-  return loadSlots(runtime)['sidebar.footer.action'];
+/** 迷你 DSH locale 服务里 en 的词典（真实 locale 服务会返回译文，这里按需镜像一份）。 */
+const EN_DICT = {
+  'price.input': 'Input',
+  'price.cache': 'Input cache',
+  'price.output': 'Output',
+  'price.perMillion': 'Price per 1M tokens',
+  'currency.CNY': 'CNY',
+  'currency.USD': 'USD',
+  'hint.peak': 'Peak pricing in',
+  'hint.idle': 'Off-peak pricing in',
+  'hint.switching': 'Price change imminent',
+  'status.peak': 'Peak hours',
+  'status.idle': 'Off-peak hours',
+  'status.error': 'Balance unavailable',
+  'status.unavailable': 'This provider has no query API',
+  'card.label': 'Account usage, click to refresh',
+};
+
+/** 载入 client.js 并拿到注册进 sidebar.footer.action 槽位的组件。lang 决定界面语言。 */
+function loadClient(runtime, lang = 'zh') {
+  return loadSlots(runtime, lang)['sidebar.footer.action'];
 }
 
 /** 载入 client.js 并返回按槽位名索引的注册组件表。 */
-function loadSlots(runtime) {
+function loadSlots(runtime, lang = 'zh') {
   const win = { __ModuleLoader__: { load: (def) => { win.__def = def; } } };
   new Function('window', 'require', source)(win, (id) => (id === 'react' ? runtime.react : {}));
   const mod = win.__def.factory((id) => (id === 'react' ? runtime.react : {}));
@@ -89,8 +107,9 @@ function loadSlots(runtime) {
   const ctx = {
     locale: {
       subscribe: () => () => {},
-      getSnapshot: () => ({ active: 'zh', locales: [], revision: 0 }),
-      bind: () => (k) => k,
+      getSnapshot: () => ({ active: lang, locales: [], revision: 0 }),
+      // 绑定命名空间后的翻译函数：返回原 key 表示"没这份译文"，组件会回退中文词典。
+      bind: () => (k) => (lang === 'en' ? EN_DICT[k] ?? k : k),
       register: () => {},
     },
     remote: { $on: () => () => {} },
@@ -120,16 +139,83 @@ function textOf(node) {
   return '';
 }
 
+/** 深度收集元素树上的所有节点（含自身）。 */
+function nodesOf(node, out = []) {
+  if (node === null || node === undefined || node === false) return out;
+  if (Array.isArray(node)) {
+    node.forEach((n) => nodesOf(n, out));
+    return out;
+  }
+  if (typeof node !== 'object') return out;
+  out.push(node);
+  if (node.children) node.children.forEach((n) => nodesOf(n, out));
+  return out;
+}
+
 const okResponse = (total) => ({
   ok: true,
   status: 200,
   json: async () => ({
     ok: true,
     balance: { total, currency: 'CNY' },
-    tier: { input: 2, cacheRead: 0.04, output: 8, known: true },
+    tier: { input: 2, cacheRead: 0.04, output: 8, known: true, currency: 'CNY', window: 'idle' },
     next: { at: Date.now() + 3_600_000 },
     peak: false,
     errors: [],
+  }),
+});
+
+/** 可定制的宿主响应：峰谷状态与下次切换时刻由用例指定。 */
+const stateResponse = (peak, nextAt) => ({
+  ok: true,
+  status: 200,
+  json: async () => ({
+    ok: true,
+    provider: { id: 'deepseek-official', kind: 'balance' },
+    balance: { isAvailable: true, total: 5.35, currency: 'CNY' },
+    tier: {
+      input: 2, cacheRead: 0.04, output: 8, model: 'deepseek-flash', known: true,
+      currency: 'CNY', window: peak ? 'peak' : 'idle',
+    },
+    next: { at: nextAt },
+    peak,
+    updatedAt: Date.now(),
+    errors: [],
+  }),
+});
+
+/** 旧宿主的响应：tier 里没有 window / currency 两个新字段。 */
+const legacyResponse = (peak, nextAt) => ({
+  ok: true,
+  status: 200,
+  json: async () => ({
+    ok: true,
+    provider: { id: 'deepseek-official', kind: 'balance' },
+    balance: { isAvailable: true, total: 5.35, currency: 'CNY' },
+    tier: { input: 2, cacheRead: 0.04, output: 8, model: 'deepseek-flash', known: true },
+    next: { at: nextAt },
+    peak,
+    errors: [],
+  }),
+});
+
+/** 非 DeepSeek provider 的按量计费响应：价格表命中，全天一价（window: null）。 */
+const providerPriceResponse = (over = {}) => ({
+  ok: true,
+  status: 200,
+  json: async () => ({
+    ok: true,
+    provider: { id: 'zai', displayName: 'Z.ai (GLM)', kind: 'balance', reason: null },
+    balance: { isAvailable: true, total: 8.5, currency: 'USD' },
+    tier: {
+      input: 0.6, cacheRead: 0.11, output: 2.2, model: 'glm-4.6', known: true,
+      currency: 'USD', window: null,
+    },
+    next: { peak: false, at: null, ms: 0 },
+    peak: false,
+    updatedAt: Date.now(),
+    errors: [],
+    ...over,
   }),
 });
 
@@ -308,8 +394,9 @@ test('宿主返回的假期表覆盖内置表：峰谷判定跟着宿主走', as
     status: 200,
     json: async () => ({
       ok: true,
+      provider: { id: 'deepseek-official', kind: 'balance' },
       balance: { total: 1, currency: 'CNY' },
-      tier: { input: 2, known: true },
+      tier: { input: 2, known: true, currency: 'CNY', window: 'peak' },
       next: { at: null, ms: 0 },
       peak: true,
       errors: [],
@@ -318,8 +405,11 @@ test('宿主返回的假期表覆盖内置表：峰谷判定跟着宿主走', as
   await flush();
 
   const text = textOf(renderCard(Comp, runtime).out);
-  // 倒计时按 "d h" 计数：宿主表生效时至少 10 天。
-  assert.ok(/1[01]d \d{1,2}h/.test(text), `倒计时应按宿主的假期表指向十几天后，实际 ${text}`);
+  // 倒计时按 "d h" 计数：宿主表生效时至少还有 10 天。不能写死 10/11——11 天假往后
+  // 可能撞上周末（例如从周二起算，第 12 天才是工作日 09:00），天数取决于当天是周几。
+  const days = /(\d+)d \d{1,2}h/.exec(text);
+  assert.ok(days, `倒计时应以 d/h 显示，实际 ${text}`);
+  assert.ok(Number(days[1]) >= 10, `倒计时应按宿主的假期表指向十几天后，实际 ${text}`);
 });
 
 test('卸载后不再写入状态', async () => {
@@ -497,4 +587,149 @@ test('状态表只出现在本插件的详情页', async () => {
   assert.notEqual(own, null);
   const rendered = runtime.render(() => own.type(own.props));
   assert.equal(rendered.out.type, 'section');
+});
+
+test('价格悬浮说明：整行命中，写清单位与三个档位，分两行', async () => {
+  const cases = [
+    ['zh', '每百万 token 价格', '输入 2 元 / 输入缓存 0.04 元 / 输出 8 元'],
+    ['en', 'Price per 1M tokens', 'Input 2 CNY / Input cache 0.04 CNY / Output 8 CNY'],
+  ];
+  for (const [lang, line0, line1] of cases) {
+    globalThis.fetch = async () => okResponse(5.35);
+    const runtime = makeRuntime();
+    const Comp = loadClient(runtime, lang);
+    renderCard(Comp, runtime);
+    await flush();
+
+    // 单价说明只挂一处（整条单价行），图标与数字各自不再挂 title：命中区覆盖整行。
+    const titled = nodesOf(renderCard(Comp, runtime).out).filter((n) => n.props && typeof n.props.title === 'string');
+    const rows = titled.filter((n) => n.props.title.includes('\n'));
+    assert.equal(rows.length, 1, `${lang}: 说明文字应只挂在单价行上`);
+
+    const lines = rows[0].props.title.split('\n');
+    assert.equal(lines.length, 2, `${lang}: 说明分两行：单位 + 三个档位`);
+    assert.equal(lines[0], line0, `${lang}: 第一行是单位`);
+    assert.equal(lines[1], line1, `${lang}: 第二行是三个档位`);
+
+    // 挂了 title 的节点必须包住三个价格数字，否则鼠标落在数字上仍出不来说明。
+    const row = textOf(rows[0]);
+    for (const amount of ['2', '0.04', '8']) {
+      assert.ok(row.includes(amount), `${lang}: 单价行应包含 ${amount}，实际 ${row}`);
+    }
+  }
+});
+
+test('峰谷切换的悬浮说明：指到倒计时/指示灯上，讲清离峰价还是谷价还有多久', async () => {
+  /** 渲染一次卡片并取回所有悬浮说明。 */
+  const titlesOf = async ({ lang, peak, offsetMs, wide = true }) => {
+    globalThis.fetch = async () => stateResponse(peak, Date.now() + offsetMs);
+    const runtime = makeRuntime();
+    const Comp = loadClient(runtime, lang);
+    renderCard(Comp, runtime, { wide });
+    await flush();
+    return nodesOf(renderCard(Comp, runtime, { wide }).out)
+      .filter((n) => n.props && typeof n.props.title === 'string')
+      .map((n) => n.props.title);
+  };
+
+  const in21 = 21 * 60000 + 30000; // 多给 30 秒，天数/分钟数不会因为用例本身的耗时跳一格
+
+  // 现在空闲 → 下一次切到峰价；现在高峰 → 下一次切到谷价。
+  const idle = await titlesOf({ lang: 'zh', peak: false, offsetMs: in21 });
+  assert.ok(idle.includes('距离峰价还剩 21 分钟'), `空闲态实际 ${JSON.stringify(idle)}`);
+  const peak = await titlesOf({ lang: 'zh', peak: true, offsetMs: in21 });
+  assert.ok(peak.includes('距离谷价还剩 21 分钟'), `高峰态实际 ${JSON.stringify(peak)}`);
+
+  // 不足 1 分钟时倒计时显示 switching，说明换成整句，不拼一个「0 分钟」。
+  const soon = await titlesOf({ lang: 'zh', peak: false, offsetMs: 30000 });
+  assert.ok(soon.includes('即将切换价格'), `即将切换实际 ${JSON.stringify(soon)}`);
+
+  // 英文用英文单位词，天/小时两级同样展开。
+  const en = await titlesOf({ lang: 'en', peak: true, offsetMs: (2 * 1440 + 15 * 60) * 60000 + 30000 });
+  assert.ok(en.includes('Off-peak pricing in 2 days 15 hours'), `英文实际 ${JSON.stringify(en)}`);
+
+  // 折叠态只有指示灯：说明挂在整块上，指向图标就能看到。
+  const folded = await titlesOf({ lang: 'zh', peak: false, offsetMs: in21, wide: false });
+  assert.deepEqual(folded, ['距离峰价还剩 21 分钟']);
+});
+
+test('非 DeepSeek provider 的按量计费模型：显示单价行，全天一价时不画指示灯', async () => {
+  globalThis.fetch = async () => providerPriceResponse();
+  const runtime = makeRuntime();
+  const Comp = loadClient(runtime);
+  renderCard(Comp, runtime);
+  await flush();
+
+  const { out } = renderCard(Comp, runtime);
+  const text = textOf(out);
+  assert.ok(text.includes('0.6') && text.includes('0.11') && text.includes('2.2'), `应显示单价行，实际 ${text}`);
+
+  // 全天一价：没有倒计时、没有指示灯，只有单价行那一条悬浮说明。
+  const titles = nodesOf(out).filter((n) => n.props && typeof n.props.title === 'string').map((n) => n.props.title);
+  assert.equal(titles.length, 1, `只应有单价行一条说明，实际 ${JSON.stringify(titles)}`);
+  assert.ok(titles[0].includes('美元'), `币种应跟价格表（USD），实际 ${titles[0]}`);
+  assert.ok(!/距离|还剩/.test(titles[0]), '全天一价的模型不该出现区间倒计时');
+});
+
+test('非 DeepSeek provider 有分时段计费时：和 DeepSeek 一样显示指示灯与倒计时', async () => {
+  const in21 = 21 * 60000 + 30000;
+  globalThis.fetch = async () => providerPriceResponse({
+    provider: { id: 'moonshotai', displayName: 'Moonshot', kind: 'balance', reason: null },
+    tier: {
+      input: 6.5, cacheRead: 1.3, output: 27, model: 'kimi-k2.7-code', known: true,
+      currency: 'CNY', window: 'idle',
+    },
+    peak: false,
+    next: { peak: true, at: Date.now() + in21, ms: in21 },
+  });
+  const runtime = makeRuntime();
+  const Comp = loadClient(runtime);
+  renderCard(Comp, runtime);
+  await flush();
+
+  const { out } = renderCard(Comp, runtime);
+  const titles = nodesOf(out).filter((n) => n.props && typeof n.props.title === 'string').map((n) => n.props.title);
+  assert.ok(titles.includes('距离峰价还剩 21 分钟'), `应显示区间倒计时，实际 ${JSON.stringify(titles)}`);
+  // 区间倒计时的指示灯带无障碍名称（高位/低位一侧）。
+  const labeled = nodesOf(out).filter((n) => n.props && n.props['aria-label'] === '空闲时段');
+  assert.equal(labeled.length, 1, '应有一个"空闲时段"的指示灯');
+  const priceRow = titles.find((t) => t.includes('\n'));
+  assert.ok(priceRow && priceRow.includes('元'), `单价行币种应为人民币，实际 ${priceRow}`);
+});
+
+test('非 DeepSeek provider 缺切换时刻时不在本地猜（不套用 DeepSeek 峰谷表）', async () => {
+  globalThis.fetch = async () => providerPriceResponse({
+    provider: { id: 'moonshotai', kind: 'balance' },
+    tier: {
+      input: 6.5, cacheRead: 1.3, output: 27, model: 'kimi-k2.7-code', known: true,
+      currency: 'CNY', window: 'idle',
+    },
+    peak: false,
+    next: { peak: true, at: null, ms: 0 },
+  });
+  const runtime = makeRuntime();
+  const Comp = loadClient(runtime);
+  renderCard(Comp, runtime);
+  await flush();
+
+  const text = textOf(renderCard(Comp, runtime).out);
+  assert.ok(text.includes('—'), `缺切换时刻应显示占位符，实际 ${text}`);
+  assert.ok(!/\d+d \d{1,2}h/.test(text), `不得用 DeepSeek 的峰谷口径本地补一个倒计时，实际 ${text}`);
+});
+
+test('旧宿主的响应（没有 tier.window）：指示灯与倒计时照旧，币种回退人民币', async () => {
+  const in21 = 21 * 60000 + 30000;
+  globalThis.fetch = async () => legacyResponse(false, Date.now() + in21);
+  const runtime = makeRuntime();
+  const Comp = loadClient(runtime);
+  renderCard(Comp, runtime);
+  await flush();
+
+  const { out } = renderCard(Comp, runtime);
+  const titles = nodesOf(out).filter((n) => n.props && typeof n.props.title === 'string').map((n) => n.props.title);
+  assert.ok(titles.includes('距离峰价还剩 21 分钟'), `旧宿主也必须显示倒计时，实际 ${JSON.stringify(titles)}`);
+  const dots = nodesOf(out).filter((n) => n.props && n.props['aria-label'] === '空闲时段');
+  assert.equal(dots.length, 1, '旧宿主也必须显示指示灯');
+  const priceRow = titles.find((t) => t.includes('\n'));
+  assert.ok(priceRow && priceRow.includes('元'), `缺 currency 时按人民币显示，实际 ${priceRow}`);
 });

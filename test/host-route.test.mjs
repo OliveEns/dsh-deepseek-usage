@@ -753,3 +753,34 @@ test('上游异常不会把异常原文送到浏览器（多提供商路径）',
 });
 
 
+
+test('非 DeepSeek provider 的按量计费模型：路由返回单价与计费区间', async () => {
+  resetFetch();
+
+  // 全天一价的 provider：有单价、币种，tier.window 为 null，不带倒计时。
+  const zai = makeCtx({ provider: 'zai', model: 'glm-4.6' });
+  apply(zai.ctx);
+  const flat = await call(zai.routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+  assert.equal(flat.body.tier.known, true, '表里的模型应计价');
+  assert.equal(flat.body.tier.currency, 'USD');
+  assert.equal(flat.body.tier.input, 0.6);
+  assert.equal(flat.body.tier.window, null, '全天一价时没有区间');
+  assert.equal(flat.body.next.at, null);
+  assert.equal(flat.body.peak, false);
+
+  // 有分时段计费的 provider：返回当前区间与下一次切换时刻。
+  const gateway = makeCtx({ provider: 'openrouter', model: 'deepseek/deepseek-v4.1-flash-1017' });
+  apply(gateway.ctx);
+  const windowed = await call(gateway.routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+  assert.equal(windowed.body.tier.known, true);
+  assert.equal(windowed.body.tier.currency, 'USD');
+  assert.ok(['peak', 'idle'].includes(windowed.body.tier.window), `应带区间，实际 ${windowed.body.tier.window}`);
+  assert.equal(typeof windowed.body.next.at, 'number', '应带下一次切换时刻');
+  assert.equal(windowed.body.peak, windowed.body.tier.window === 'peak', 'peak 与区间必须一致');
+
+  // 两块表的模型都查不到时，和以前一样不计价。
+  const unknown = makeCtx({ provider: 'zai', model: 'glm-9' });
+  apply(unknown.ctx);
+  const none = await call(unknown.routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+  assert.equal(none.body.tier.known, false);
+});

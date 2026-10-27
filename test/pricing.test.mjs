@@ -3,7 +3,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   HOLIDAY_TABLE_THROUGH_YEAR,
-  OFFICIAL_PROVIDERS,
   expandHolidayRanges,
   hasHolidayCoverage,
   isPeak,
@@ -13,7 +12,6 @@ import {
 
 const at = (iso) => Date.parse(iso);
 const PEAK = '2026-10-22T10:00:00+08:00'; // 周四 10:00，北京时间
-const OFFICIAL = OFFICIAL_PROVIDERS[0];
 
 test('只有官方路由上的官方模型计价', () => {
   const cases = [
@@ -137,4 +135,96 @@ test('单价取自表内数字', () => {
   const offPeak = unitAt('deepseek-flash', at('2026-10-22T13:00:00+08:00'), 'deepseek-official');
   assert.equal(offPeak.input, 1, '空闲时段单价减半');
   assert.equal(offPeak.output, 4);
+});
+
+test('非 DeepSeek provider：命中按量计费表才计价，币种跟表走，全天一价无区间', () => {
+  const zai = unitAt('glm-4.6', at(PEAK), 'zai');
+  assert.equal(zai.known, true);
+  assert.equal(zai.currency, 'USD');
+  assert.equal(zai.input, 0.6);
+  assert.equal(zai.cacheRead, 0.11);
+  assert.equal(zai.output, 2.2);
+  assert.equal(zai.window, null, '全天一价：没有计费区间');
+  assert.equal(zai.next, null);
+  assert.equal(zai.via, 'exact', '与 DeepSeek 共用同一套查表路径，via 口径一致');
+
+  const kimi = unitAt('kimi-k2.7-code', at(PEAK), 'moonshotai');
+  assert.equal(kimi.known, true);
+  assert.equal(kimi.currency, 'USD');
+
+  const minimaxCn = unitAt('MiniMax-M3.1-Flash', at(PEAK), 'minimax-cn');
+  assert.equal(minimaxCn.known, true, '模型 id 大小写不影响命中');
+  assert.equal(minimaxCn.currency, 'CNY');
+  assert.equal(minimaxCn.input, 1);
+});
+
+test('价格表外的模型与 provider 不猜价格', () => {
+  assert.equal(unitAt('glm-9', at(PEAK), 'zai').known, false);
+  assert.equal(unitAt('glm-4.6', at(PEAK), 'unknown-provider').known, false);
+  assert.equal(unitAt('glm-4.6', at(PEAK), '').known, false);
+  // 官方路由上的非 DeepSeek 模型同样不猜。
+  assert.equal(unitAt('glm-4.6', at(PEAK), 'deepseek-official').known, false);
+  // provider 大小写与首尾空白不影响查表。
+  assert.equal(unitAt('GLM-4.6', at(PEAK), ' ZAI ').known, true);
+});
+
+test('有分时段计费的模型：按区间取价并给出下一次切换（OpenRouter 上的 DeepSeek）', () => {
+  const id = 'deepseek/deepseek-v4.1-flash-1017';
+  // 工作日 10:00（北京时间）= UTC 02:00，OpenRouter 的贵的一侧。
+  const peak = unitAt(id, at('2026-10-22T10:00:00+08:00'), 'openrouter');
+  assert.equal(peak.window, 'peak');
+  assert.equal(peak.input, 0.3);
+  assert.equal(peak.cacheRead, 0.006);
+  assert.equal(peak.output, 1.2);
+  assert.equal(new Date(peak.next.at).toISOString(), '2026-10-22T04:00:00.000Z', '12:00 切到便宜的一侧');
+
+  // 工作日 13:00（午休）：便宜的一侧。
+  const off = unitAt(id, at('2026-10-22T13:00:00+08:00'), 'openrouter');
+  assert.equal(off.window, 'idle');
+  assert.equal(off.input, 0.15);
+  assert.equal(off.output, 0.6);
+  assert.equal(new Date(off.next.at).toISOString(), '2026-10-22T06:00:00.000Z', '14:00 切回贵的一侧');
+
+  // 周六全天便宜，下一次切换要到周一 09:00。
+  const weekend = unitAt(id, at('2026-10-24T10:00:00+08:00'), 'openrouter');
+  assert.equal(weekend.window, 'idle');
+  assert.equal(new Date(weekend.next.at).toISOString(), '2026-10-26T01:00:00.000Z');
+});
+
+test('网关的分时段没有法定节假日概念：国庆工作日照样按贵的一侧', () => {
+  const id = 'deepseek/deepseek-v4.1-flash-1017';
+  const day = at('2026-10-01T10:00:00+08:00'); // 周四，国庆
+  const viaGateway = unitAt(id, day, 'openrouter');
+  assert.equal(viaGateway.window, 'peak', 'OpenRouter 的时段只看 UTC 星期，不认中国节假日');
+  assert.equal(viaGateway.input, 0.3);
+  // 同一个模型走 DeepSeek 官方路由时，节假日全天是免峰价。
+  const official = unitAt('deepseek-flash', day, 'deepseek-official');
+  assert.equal(official.window, 'idle');
+  assert.equal(official.input, 1);
+});
+
+test('DeepSeek 与其它提供商走同一套查表与区间逻辑', () => {
+  // DeepSeek 的"峰谷"就是一条带 schedule 的普通表条目：同样返回 window / next。
+  const ds = unitAt('deepseek-flash', at(PEAK), 'deepseek-official');
+  assert.equal(ds.window, 'peak');
+  assert.equal(typeof ds.next.at, 'number');
+  assert.equal(ds.via, 'exact');
+
+  // 三条官方路由共用同一份快照。
+  for (const provider of ['deepseek-official', 'deepseek-account', 'deepseek']) {
+    const q = unitAt('deepseek-flash', at(PEAK), provider);
+    assert.equal(q.known, true, provider);
+    assert.equal(q.input, 2, provider);
+    assert.equal(q.window, 'peak', provider);
+  }
+
+  // 同一模型 id 在不同提供商的快照里取不同价（表按 provider 分开，不跨表回退）。
+  assert.equal(unitAt('glm-4.6', at(PEAK), 'zai').input, 0.6);
+  assert.equal(unitAt('glm-4.6', at(PEAK), 'openrouter').input, 0.55);
+
+  // 表里没有的模型：与家族词一样直接 known=false，且不拿兜底数字顶替。
+  const missing = unitAt('deepseek-v5-pro', at(PEAK), 'deepseek-official');
+  assert.equal(missing.known, false);
+  assert.equal(missing.input, null, '表外模型不返回任何数字');
+  assert.equal(unitAt('glm-9', at(PEAK), 'zai').input, null);
 });
