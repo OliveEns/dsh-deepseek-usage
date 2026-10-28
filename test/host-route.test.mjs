@@ -281,6 +281,91 @@ test('api-key 路由仍按 Bearer 发送（回归）', async () => {
   }
 });
 
+test('清单模式把未登录的账号路由标成未登录，而不是未配置密钥', async () => {
+  const { ctx, routes } = makeCtx({
+    provider: 'deepseek-account',
+    registered: [{ id: 'deepseek-official' }, { id: 'deepseek-account' }],
+    declared: [{ provider: 'deepseek-account', displayName: 'DeepSeek Account' }],
+  });
+  apply(ctx);
+  const res = await call(
+    routes.get('/api/deepseek-usage/accounts'),
+    makeReq({ host: '127.0.0.1:64452' }, '/api/deepseek-usage/accounts?lang=zh&list=1'),
+  );
+  assert.equal(res.status, 200);
+  const row = res.body.accounts.find((item) => item.id === 'deepseek-account');
+  assert.ok(row, '账号路由应出现在清单里');
+  // 状态页先画清单再补数据：这一帧若报 no-key，用户会先看到"未配置密钥"再跳成"未登录"。
+  assert.equal(row.status, 'no-grant');
+});
+
+test('清单模式里已登录的账号路由是待查询，不是缺凭据', async () => {
+  const { ctx, routes } = makeCtx({
+    provider: 'deepseek-account',
+    grant: 'grant-token-list',
+    registered: [{ id: 'deepseek-official' }, { id: 'deepseek-account' }],
+    declared: [{ provider: 'deepseek-account', displayName: 'DeepSeek Account' }],
+  });
+  apply(ctx);
+  const res = await call(
+    routes.get('/api/deepseek-usage/accounts'),
+    makeReq({ host: '127.0.0.1:64452' }, '/api/deepseek-usage/accounts?lang=zh&list=1'),
+  );
+  assert.equal(res.status, 200);
+  const row = res.body.accounts.find((item) => item.id === 'deepseek-account');
+  assert.equal(row.status, 'pending');
+});
+
+test('账号路由不受 DEEPSEEK_BASE_URL 影响：grant 只发往官方源', async () => {
+  const seen = [];
+  const previousFetch = globalThis.fetch;
+  const previousBase = process.env.DEEPSEEK_BASE_URL;
+  process.env.DEEPSEEK_BASE_URL = 'https://relay.example/v1';
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), headers: init?.headers ?? {} });
+    return defaultFetch(url, init);
+  };
+  try {
+    // 令牌取值与其它用例不同，避开账户快照缓存的同一个桶。
+    const { ctx, routes } = makeCtx({ provider: 'deepseek-account', grant: 'grant-token-relay' });
+    apply(ctx);
+    const res = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+    assert.deepEqual(res.body.errors, []);
+    assert.equal(seen.length, 1);
+    // 宿主只肯把 grant 发到官方推理源；把登录令牌送给中转就是把凭据外泄。
+    assert.equal(seen[0].url, 'https://api.deepseek.com/user/balance');
+    assert.equal(seen[0].headers['x-dsh-auth-token'], 'grant-token-relay');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousBase === undefined) delete process.env.DEEPSEEK_BASE_URL;
+    else process.env.DEEPSEEK_BASE_URL = previousBase;
+  }
+});
+
+test('api-key 路由仍遵循 DEEPSEEK_BASE_URL（账号路由的例外不扩大到它）', async () => {
+  const seen = [];
+  const previousFetch = globalThis.fetch;
+  const previousBase = process.env.DEEPSEEK_BASE_URL;
+  process.env.DEEPSEEK_BASE_URL = 'https://relay.example/v1';
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), headers: init?.headers ?? {} });
+    return defaultFetch(url, init);
+  };
+  try {
+    const { ctx, routes } = makeCtx({ provider: 'deepseek-official', key: 'sk-relay-key' });
+    apply(ctx);
+    const res = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+    assert.deepEqual(res.body.errors, []);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url, 'https://relay.example/v1/user/balance');
+    assert.equal(seen[0].headers.Authorization, 'Bearer sk-relay-key');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousBase === undefined) delete process.env.DEEPSEEK_BASE_URL;
+    else process.env.DEEPSEEK_BASE_URL = previousBase;
+  }
+});
+
 test('上游异常不会把异常原文送到浏览器', async () => {
   const { ctx, routes } = makeCtx();
   apply(ctx);
