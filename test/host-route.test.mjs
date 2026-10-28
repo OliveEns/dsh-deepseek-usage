@@ -79,6 +79,13 @@ function makeCtx(options = {}) {
         const value = options.refs ? options.refs[name] : (name === 'DEEPSEEK_API_KEY' ? key : undefined);
         return value === undefined || value === null ? undefined : { value };
       },
+      // 记录 API：DeepSeek 账号登录的 grant 走这里（options.grant 注入令牌）。
+      readRecord: async (key) => {
+        if (options.grant === undefined) return undefined;
+        const name = key && typeof key === "object" && "name" in key ? key.name : String(key);
+        if (name !== "deepseek-account-platform/default") return undefined;
+        return { kind: "grant", payload: { token: options.grant } };
+      },
       set: async () => {},
       unset: async () => {},
     },
@@ -225,6 +232,53 @@ test('Key 含非法字符时不把 Key 写进响应', async () => {
   assert.equal(res.body.errors.length, 1);
   assert.ok(!JSON.stringify(res.body).includes('sk-live'), '响应里不得出现 Key');
   assert.ok(!JSON.stringify(res.body).includes('second-line'), '响应里不得出现 Key 的其余部分');
+});
+
+test('DeepSeek 账号路由用登录 grant 查余额，且不带 Bearer', async () => {
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    seen.push(init?.headers ?? {});
+    return defaultFetch(url, init);
+  };
+  try {
+    const { ctx, routes } = makeCtx({ provider: 'deepseek-account', grant: 'grant-token-1' });
+    apply(ctx);
+    const res = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.errors, []);
+    assert.equal(res.body.balance.total, 12.34);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]['x-dsh-auth-token'], 'grant-token-1');
+    assert.equal(seen[0].Authorization, undefined, 'account 路由不得发 Bearer');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('DeepSeek 账号路由未登录时给出可行动的文案', async () => {
+  const { ctx, routes } = makeCtx({ provider: 'deepseek-account' });
+  apply(ctx);
+  const res = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.errors, ['DeepSeek 账号尚未登录：在设置里登录后即可显示余额']);
+  assert.equal(res.body.balance.total, null, '没有余额时是 null，不是 0');
+});
+
+test('api-key 路由仍按 Bearer 发送（回归）', async () => {
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    seen.push(init?.headers ?? {});
+    return defaultFetch(url, init);
+  };
+  try {
+    const { ctx, routes } = makeCtx({ provider: 'deepseek-official', key: 'sk-plain-key' });
+    apply(ctx);
+    const res = await call(routes.get('/api/deepseek-usage'), makeReq({ host: '127.0.0.1:64452' }));
+    assert.deepEqual(res.body.errors, []);
+    assert.equal(seen[0].Authorization, 'Bearer sk-plain-key');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('上游异常不会把异常原文送到浏览器', async () => {
